@@ -1,0 +1,22 @@
+[package]
+name = "pifp_protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Proof-of-Impact Funding Protocol (PIFP) Soroban smart contract"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = "22.0.0"
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[profile.release]
+opt-level = "z"
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
