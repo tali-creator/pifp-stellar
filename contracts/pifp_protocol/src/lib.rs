@@ -15,8 +15,11 @@ mod invariants;
 #[cfg(test)]
 mod test;
 
-use storage::{get_and_increment_project_id, get_oracle, load_project, save_project, set_oracle};
-pub use types::{Project, ProjectStatus};
+use storage::{
+    get_and_increment_project_id, has_role, load_project, save_project, set_admin, set_oracle,
+    set_role,
+};
+pub use types::{Project, ProjectStatus, Role};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,13 +120,49 @@ impl PifpProtocol {
         );
     }
 
+    /// Initialize the contract with an admin.
+    /// Can only be called once.
+    pub fn init(env: Env, admin: Address) {
+        set_admin(&env, &admin);
+    }
+
+    /// Grant a role to an address.
+    /// Requires Admin authorization.
+    pub fn grant_role(env: Env, admin: Address, user: Address, role: Role) {
+        admin.require_auth();
+        if !has_role(&env, &admin, Role::Admin) {
+            panic_with_error!(&env, Error::NotAuthorized);
+        }
+        set_role(&env, &user, role, true);
+    }
+
+    /// Revoke a role from an address.
+    /// Requires Admin authorization.
+    pub fn revoke_role(env: Env, admin: Address, user: Address, role: Role) {
+        admin.require_auth();
+        if !has_role(&env, &admin, Role::Admin) {
+            panic_with_error!(&env, Error::NotAuthorized);
+        }
+        set_role(&env, &user, role, false);
+    }
+
+    /// Check if an address has a role.
+    pub fn has_role(env: Env, user: Address, role: Role) -> bool {
+        has_role(&env, &user, role)
+    }
+
     /// Set the trusted oracle/verifier address.
     ///
-    /// - `admin` must authorize the call (the caller setting the oracle).
+    /// - `admin` must authorize the call and have Admin role.
     /// - `oracle` is the address that will be permitted to verify proofs.
     pub fn set_oracle(env: Env, admin: Address, oracle: Address) {
         admin.require_auth();
+        if !has_role(&env, &admin, Role::Admin) {
+            panic_with_error!(&env, Error::NotAuthorized);
+        }
         set_oracle(&env, &oracle);
+        // Also grant the Oracle role for the new RBAC system
+        set_role(&env, &oracle, Role::Oracle, true);
     }
 
     /// Verify proof of impact and update project status.
@@ -134,13 +173,32 @@ impl PifpProtocol {
     /// NOTE: This is a mocked verification (hash equality).
     /// The structure is prepared for future ZK-STARK verification.
     ///
-    /// - Only the registered oracle may call this.
+    /// - Only addresses with the Oracle role may call this.
     /// - The project must be in `Funding` or `Active` status.
     /// - `submitted_proof_hash` must match the project's `proof_hash`.
-    pub fn verify_and_release(env: Env, project_id: u64, submitted_proof_hash: BytesN<32>) {
-        // Ensure caller is the registered oracle.
-        let oracle = get_oracle(&env);
+    /// Verify proof of impact and update project status.
+    ///
+    /// The registered oracle submits a proof hash. If it matches the project's
+    /// stored `proof_hash`, the project status transitions to `Completed`.
+    ///
+    /// NOTE: This is a mocked verification (hash equality).
+    /// The structure is prepared for future ZK-STARK verification.
+    ///
+    /// - Only addresses with the Oracle role may call this.
+    /// - The project must be in `Funding` or `Active` status.
+    /// - `submitted_proof_hash` must match the project's `proof_hash`.
+    pub fn verify_and_release(
+        env: Env,
+        oracle: Address,
+        project_id: u64,
+        submitted_proof_hash: BytesN<32>,
+    ) {
+        // Ensure caller is a registered oracle or has the Oracle role.
         oracle.require_auth();
+
+        if !has_role(&env, &oracle, Role::Oracle) {
+            panic_with_error!(&env, Error::NotAuthorized);
+        }
 
         // Load the project.
         let mut project = load_project(&env, project_id);

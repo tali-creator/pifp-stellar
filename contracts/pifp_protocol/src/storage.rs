@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, Address, Env};
 
-use crate::types::Project;
+use crate::types::{Project, Role};
 
 /// Keys used for persistent contract storage.
 #[contracttype]
@@ -12,6 +12,32 @@ pub enum DataKey {
     Project(u64),
     /// Trusted oracle/verifier address.
     OracleKey,
+    /// Initialized flag.
+    AdminKey,
+    /// Role management key.
+    Role(Address, Role),
+}
+
+pub fn has_role(env: &Env, address: &Address, role: Role) -> bool {
+    let key = DataKey::Role(address.clone(), role);
+    env.storage().persistent().has(&key)
+}
+
+pub fn set_role(env: &Env, address: &Address, role: Role, authorized: bool) {
+    let key = DataKey::Role(address.clone(), role);
+    if authorized {
+        env.storage().persistent().set(&key, &());
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+pub fn set_admin(env: &Env, admin: &Address) {
+    if env.storage().persistent().has(&DataKey::AdminKey) {
+        panic!("already initialized");
+    }
+    env.storage().persistent().set(&DataKey::AdminKey, admin);
+    set_role(env, admin, Role::Admin, true);
 }
 
 /// Atomically reads, increments, and stores the project counter.
@@ -42,13 +68,4 @@ pub fn load_project(env: &Env, id: u64) -> Project {
 /// Store the trusted oracle address.
 pub fn set_oracle(env: &Env, oracle: &Address) {
     env.storage().persistent().set(&DataKey::OracleKey, oracle);
-}
-
-/// Retrieve the trusted oracle address.
-/// Panics if no oracle has been set.
-pub fn get_oracle(env: &Env) -> Address {
-    env.storage()
-        .persistent()
-        .get(&DataKey::OracleKey)
-        .expect("oracle not set")
 }

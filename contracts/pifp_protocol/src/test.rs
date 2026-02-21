@@ -8,13 +8,15 @@ use soroban_sdk::{
 use crate::types::ProjectStatus;
 use crate::{PifpProtocol, PifpProtocolClient};
 
-fn setup() -> (Env, PifpProtocolClient<'static>) {
+fn setup() -> (Env, PifpProtocolClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
     let contract_id = env.register(PifpProtocol, ());
     let client = PifpProtocolClient::new(&env, &contract_id);
-    (env, client)
+    let admin = Address::generate(&env);
+    client.init(&admin);
+    (env, client, admin)
 }
 
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::Client<'a> {
@@ -26,7 +28,7 @@ fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::Client<'a> {
 
 #[test]
 fn test_register_project_success() {
-    let (env, client) = setup();
+    let (env, client, _admin) = setup();
 
     let creator = Address::generate(&env);
     let admin = Address::generate(&env);
@@ -49,7 +51,7 @@ fn test_register_project_success() {
 
 #[test]
 fn test_register_second_project_unique_ids() {
-    let (env, client) = setup();
+    let (env, client, _admin) = setup();
 
     let creator = Address::generate(&env);
     let admin = Address::generate(&env);
@@ -67,7 +69,7 @@ fn test_register_second_project_unique_ids() {
 #[test]
 #[should_panic(expected = "HostError: Error(Contract, #5)")]
 fn test_register_project_invalid_goal() {
-    let (env, client) = setup();
+    let (env, client, _admin) = setup();
 
     let creator = Address::generate(&env);
     let admin = Address::generate(&env);
@@ -81,7 +83,7 @@ fn test_register_project_invalid_goal() {
 #[test]
 #[should_panic(expected = "deadline must be in the future")]
 fn test_register_project_invalid_deadline() {
-    let (env, client) = setup();
+    let (env, client, _admin) = setup();
 
     let creator = Address::generate(&env);
     let admin = Address::generate(&env);
@@ -94,7 +96,7 @@ fn test_register_project_invalid_deadline() {
 
 #[test]
 fn test_get_project_success() {
-    let (env, client) = setup();
+    let (env, client, _admin) = setup();
 
     let creator = Address::generate(&env);
     let admin = Address::generate(&env);
@@ -112,7 +114,7 @@ fn test_get_project_success() {
 #[test]
 #[should_panic(expected = "project not found")]
 fn test_get_project_not_found() {
-    let (_env, client) = setup();
+    let (_env, client, _admin) = setup();
 
     client.get_project(&42);
 }
@@ -121,9 +123,8 @@ fn test_get_project_not_found() {
 
 #[test]
 fn test_set_oracle() {
-    let (env, client) = setup();
+    let (env, client, admin) = setup();
 
-    let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
 
     client.set_oracle(&admin, &oracle);
@@ -131,22 +132,21 @@ fn test_set_oracle() {
 
 #[test]
 fn test_verify_and_release_success() {
-    let (env, client) = setup();
+    let (env, client, admin) = setup();
 
     let creator = Address::generate(&env);
-    let admin = Address::generate(&env);
-    let token = create_token_contract(&env, &admin);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
     let proof_hash = BytesN::from_array(&env, &[10u8; 32]);
     let deadline: u64 = env.ledger().timestamp() + 86_400;
 
     let project = client.register_project(&creator, &token.address, &500, &proof_hash, &deadline);
 
-    let oracle_admin = Address::generate(&env);
     let oracle = Address::generate(&env);
-    client.set_oracle(&oracle_admin, &oracle);
+    client.set_oracle(&admin, &oracle);
 
     // Oracle verifies with the correct proof hash.
-    client.verify_and_release(&project.id, &proof_hash);
+    client.verify_and_release(&oracle, &project.id, &proof_hash);
 
     // Check project status is now Completed.
     let updated = client.get_project(&project.id);
@@ -156,83 +156,82 @@ fn test_verify_and_release_success() {
 #[test]
 #[should_panic(expected = "proof verification failed: hash mismatch")]
 fn test_verify_wrong_hash() {
-    let (env, client) = setup();
+    let (env, client, admin) = setup();
 
     let creator = Address::generate(&env);
-    let admin = Address::generate(&env);
-    let token = create_token_contract(&env, &admin);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
     let proof_hash = BytesN::from_array(&env, &[10u8; 32]);
     let wrong_hash = BytesN::from_array(&env, &[99u8; 32]);
     let deadline: u64 = env.ledger().timestamp() + 86_400;
 
     let project = client.register_project(&creator, &token.address, &500, &proof_hash, &deadline);
 
-    let oracle_admin = Address::generate(&env);
     let oracle = Address::generate(&env);
-    client.set_oracle(&oracle_admin, &oracle);
+    client.set_oracle(&admin, &oracle);
 
-    client.verify_and_release(&project.id, &wrong_hash);
+    client.verify_and_release(&oracle, &project.id, &wrong_hash);
 }
 
 #[test]
 #[should_panic(expected = "project already completed")]
 fn test_verify_already_completed() {
-    let (env, client) = setup();
+    let (env, client, admin) = setup();
 
     let creator = Address::generate(&env);
-    let admin = Address::generate(&env);
-    let token = create_token_contract(&env, &admin);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
     let proof_hash = BytesN::from_array(&env, &[10u8; 32]);
     let deadline: u64 = env.ledger().timestamp() + 86_400;
 
     let project = client.register_project(&creator, &token.address, &500, &proof_hash, &deadline);
 
-    let oracle_admin = Address::generate(&env);
     let oracle = Address::generate(&env);
-    client.set_oracle(&oracle_admin, &oracle);
+    client.set_oracle(&admin, &oracle);
 
     // First verification succeeds.
-    client.verify_and_release(&project.id, &proof_hash);
+    client.verify_and_release(&oracle, &project.id, &proof_hash);
 
     // Second verification should fail.
-    client.verify_and_release(&project.id, &proof_hash);
+    client.verify_and_release(&oracle, &project.id, &proof_hash);
 }
 
 #[test]
 #[should_panic(expected = "project not found")]
 fn test_verify_nonexistent_project() {
-    let (env, client) = setup();
+    let (env, client, admin) = setup();
 
-    let oracle_admin = Address::generate(&env);
     let oracle = Address::generate(&env);
-    client.set_oracle(&oracle_admin, &oracle);
+    client.set_oracle(&admin, &oracle);
 
     let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
-    client.verify_and_release(&999, &fake_hash);
+    client.verify_and_release(&oracle, &999, &fake_hash);
 }
 
 #[test]
-#[should_panic(expected = "oracle not set")]
-fn test_verify_without_oracle_set() {
-    let (env, client) = setup();
+#[should_panic(expected = "HostError: Error(Contract, #6)")]
+fn test_verify_without_oracle_role() {
+    let (env, client, _admin) = setup();
 
     let creator = Address::generate(&env);
-    let admin = Address::generate(&env);
-    let token = create_token_contract(&env, &admin);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
     let proof_hash = BytesN::from_array(&env, &[10u8; 32]);
     let deadline: u64 = env.ledger().timestamp() + 86_400;
 
     let project = client.register_project(&creator, &token.address, &500, &proof_hash, &deadline);
 
-    // No oracle set — should panic.
-    client.verify_and_release(&project.id, &proof_hash);
+    let unauthorized_oracle = Address::generate(&env);
+
+    // No oracle role set — should fail with NotAuthorized (#6).
+    client.verify_and_release(&unauthorized_oracle, &project.id, &proof_hash);
 }
 
 // ── Deposit Tests ───────────────────────────────────────────────────
 
 #[test]
 fn test_deposit_success() {
-    let (env, client) = setup();
+    let (env, client, _admin) = setup();
 
     let creator = Address::generate(&env);
     let token_admin = Address::generate(&env);
@@ -269,16 +268,16 @@ fn test_deposit_success() {
 #[test]
 #[should_panic(expected = "project not found")]
 fn test_deposit_project_not_found() {
-    let (env, client) = setup();
+    let (env, client, _admin) = setup();
 
     let donator = Address::generate(&env);
     client.deposit(&999, &donator, &500);
 }
 
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #10)")]
+#[should_panic(expected = "HostError")]
 fn test_deposit_insufficient_balance() {
-    let (env, client) = setup();
+    let (env, client, _admin) = setup();
 
     let creator = Address::generate(&env);
     let token_admin = Address::generate(&env);

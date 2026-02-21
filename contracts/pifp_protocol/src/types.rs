@@ -14,6 +14,13 @@ pub enum ProjectStatus {
     Expired,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Role {
+    Admin = 0,
+    Oracle = 1,
+}
+
 /// On-chain representation of a funding project.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]

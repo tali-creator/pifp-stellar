@@ -6,17 +6,19 @@ use proptest::prelude::*;
 use soroban_sdk::{testutils::Address as _, token, Address, BytesN, Env};
 
 use crate::invariants::*;
-use crate::types::ProjectStatus;
+pub use crate::types::{ProjectStatus, Role};
 use crate::{PifpProtocol, PifpProtocolClient};
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn setup_env() -> (Env, PifpProtocolClient<'static>) {
+fn setup_env() -> (Env, PifpProtocolClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(PifpProtocol, ());
     let client = PifpProtocolClient::new(&env, &contract_id);
-    (env, client)
+    let admin = Address::generate(&env);
+    client.init(&admin);
+    (env, client, admin)
 }
 
 fn create_token<'a>(env: &Env, admin: &Address) -> token::Client<'a> {
@@ -31,7 +33,7 @@ proptest! {
 
     #[test]
     fn fuzz_register_valid_goal(goal in 1i128..=1_000_000_000_000i128) {
-        let (env, client) = setup_env();
+        let (env, client, _admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
@@ -54,7 +56,7 @@ proptest! {
 
     #[test]
     fn fuzz_register_valid_deadline(offset in 1u64..=10_000_000u64) {
-        let (env, client) = setup_env();
+        let (env, client, _admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
@@ -75,7 +77,7 @@ proptest! {
 
     #[test]
     fn fuzz_register_random_proof_hash(hash_bytes in prop::array::uniform32(any::<u8>())) {
-        let (env, client) = setup_env();
+        let (env, client, _admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
@@ -102,7 +104,7 @@ proptest! {
 
     #[test]
     fn fuzz_deposit_single(amount in 1i128..=100_000i128) {
-        let (env, client) = setup_env();
+        let (env, client, _admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token_client = create_token(&env, &token_admin);
@@ -133,7 +135,7 @@ proptest! {
     fn fuzz_deposit_multiple(
         amounts in prop::collection::vec(1i128..=10_000i128, 2..=8)
     ) {
-        let (env, client) = setup_env();
+        let (env, client, _admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token_client = create_token(&env, &token_admin);
@@ -182,7 +184,7 @@ proptest! {
     ) {
         prop_assume!(stored_bytes != submitted_bytes);
 
-        let (env, client) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
@@ -197,12 +199,11 @@ proptest! {
             &deadline,
         );
 
-        let oracle_admin = Address::generate(&env);
         let oracle = Address::generate(&env);
-        client.set_oracle(&oracle_admin, &oracle);
+        client.set_oracle(&admin, &oracle);
 
         let wrong_hash = BytesN::from_array(&env, &submitted_bytes);
-        let result = client.try_verify_and_release(&project.id, &wrong_hash);
+        let result = client.try_verify_and_release(&oracle, &project.id, &wrong_hash);
         prop_assert!(result.is_err(), "verify_and_release should fail with wrong hash");
     }
 
@@ -210,7 +211,7 @@ proptest! {
     fn fuzz_verify_correct_hash_always_succeeds(
         hash_bytes in prop::array::uniform32(any::<u8>()),
     ) {
-        let (env, client) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
@@ -225,11 +226,10 @@ proptest! {
             &deadline,
         );
 
-        let oracle_admin = Address::generate(&env);
         let oracle = Address::generate(&env);
-        client.set_oracle(&oracle_admin, &oracle);
+        client.set_oracle(&admin, &oracle);
 
-        client.verify_and_release(&project.id, &proof_hash);
+        client.verify_and_release(&oracle, &project.id, &proof_hash);
 
         let updated = client.get_project(&project.id);
         assert_valid_status_transition(&ProjectStatus::Funding, &updated.status);
@@ -244,7 +244,7 @@ proptest! {
 
     #[test]
     fn fuzz_sequential_ids(n in 2u32..=10u32) {
-        let (env, client) = setup_env();
+        let (env, client, _admin) = setup_env();
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &[1u8; 32]);
@@ -274,7 +274,7 @@ proptest! {
 
     #[test]
     fn fuzz_immutability_after_deposit(amount in 1i128..=50_000i128) {
-        let (env, client) = setup_env();
+        let (env, client, _admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token_client = create_token(&env, &token_admin);
@@ -302,7 +302,7 @@ proptest! {
     fn fuzz_immutability_after_verify(
         hash_bytes in prop::array::uniform32(any::<u8>()),
     ) {
-        let (env, client) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
@@ -317,10 +317,9 @@ proptest! {
             &deadline,
         );
 
-        let oracle_admin = Address::generate(&env);
         let oracle = Address::generate(&env);
-        client.set_oracle(&oracle_admin, &oracle);
-        client.verify_and_release(&original.id, &proof_hash);
+        client.set_oracle(&admin, &oracle);
+        client.verify_and_release(&oracle, &original.id, &proof_hash);
 
         let after = client.get_project(&original.id);
         assert_project_immutable_fields(&original, &after);
@@ -339,7 +338,7 @@ proptest! {
         hash_bytes in prop::array::uniform32(any::<u8>()),
         deadline_offset in 1000u64..=10_000_000u64,
     ) {
-        let (env, client) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token_client = create_token(&env, &token_admin);
@@ -380,10 +379,9 @@ proptest! {
         assert_eq!(after_deposits.balance, total_deposited);
 
         // Phase 3: Oracle verification.
-        let oracle_admin = Address::generate(&env);
         let oracle = Address::generate(&env);
-        client.set_oracle(&oracle_admin, &oracle);
-        client.verify_and_release(&project.id, &proof_hash);
+        client.set_oracle(&admin, &oracle);
+        client.verify_and_release(&oracle, &project.id, &proof_hash);
 
         let final_project = client.get_project(&project.id);
         assert_valid_status_transition(&ProjectStatus::Funding, &final_project.status);
@@ -393,7 +391,7 @@ proptest! {
         assert_eq!(final_project.balance, total_deposited);
 
         // Phase 4: Double-verify should fail.
-        let result = client.try_verify_and_release(&project.id, &proof_hash);
+        let result = client.try_verify_and_release(&oracle, &project.id, &proof_hash);
         prop_assert!(result.is_err(), "double verification should fail");
     }
 }
