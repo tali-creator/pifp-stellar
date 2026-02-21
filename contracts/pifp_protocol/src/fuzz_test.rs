@@ -3,10 +3,11 @@ extern crate std;
 use std::vec::Vec;
 
 use proptest::prelude::*;
-use soroban_sdk::{testutils::Address as _, token, Address, BytesN, Env};
+use soroban_sdk::{testutils::Address as _, token, Address, BytesN, Env, Vec as SorobanVec};
 
 use crate::invariants::*;
-pub use crate::types::{ProjectStatus, Role};
+pub use crate::types::ProjectStatus;
+pub use crate::Role;
 use crate::{PifpProtocol, PifpProtocolClient};
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -33,16 +34,21 @@ proptest! {
 
     #[test]
     fn fuzz_register_valid_goal(goal in 1i128..=1_000_000_000_000i128) {
-        let (env, client, _admin) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &[7u8; 32]);
         let deadline = env.ledger().timestamp() + 86_400;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token.address.clone());
+
         let project = client.register_project(
             &creator,
-            &token.address,
+            &tokens,
             &goal,
             &proof_hash,
             &deadline,
@@ -50,22 +56,26 @@ proptest! {
 
         assert_all_project_invariants(&project);
         assert_eq!(project.goal, goal);
-        assert_eq!(project.balance, 0);
         assert_eq!(project.status, ProjectStatus::Funding);
     }
 
     #[test]
     fn fuzz_register_valid_deadline(offset in 1u64..=10_000_000u64) {
-        let (env, client, _admin) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &[8u8; 32]);
         let deadline = env.ledger().timestamp() + offset;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token.address.clone());
+
         let project = client.register_project(
             &creator,
-            &token.address,
+            &tokens,
             &100,
             &proof_hash,
             &deadline,
@@ -77,16 +87,21 @@ proptest! {
 
     #[test]
     fn fuzz_register_random_proof_hash(hash_bytes in prop::array::uniform32(any::<u8>())) {
-        let (env, client, _admin) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &hash_bytes);
         let deadline = env.ledger().timestamp() + 86_400;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token.address.clone());
+
         let project = client.register_project(
             &creator,
-            &token.address,
+            &tokens,
             &1000,
             &proof_hash,
             &deadline,
@@ -104,16 +119,21 @@ proptest! {
 
     #[test]
     fn fuzz_deposit_single(amount in 1i128..=100_000i128) {
-        let (env, client, _admin) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token_client = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &[1u8; 32]);
         let deadline = env.ledger().timestamp() + 86_400;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token_client.address.clone());
+
         let project = client.register_project(
             &creator,
-            &token_client.address,
+            &tokens,
             &100_000,
             &proof_hash,
             &deadline,
@@ -123,11 +143,13 @@ proptest! {
         let sac = token::StellarAssetClient::new(&env, &token_client.address);
         sac.mint(&donator, &amount);
 
-        let balance_before = project.balance;
-        client.deposit(&project.id, &donator, &amount);
+        let balance_before = client.get_balance(&project.id, &token_client.address);
+        client.deposit(&project.id, &donator, &token_client.address, &amount);
 
+        let balance_after = client.get_balance(&project.id, &token_client.address);
+        assert_deposit_invariant(balance_before, balance_after, amount);
+        
         let updated = client.get_project(&project.id);
-        assert_deposit_invariant(balance_before, updated.balance, amount);
         assert_all_project_invariants(&updated);
     }
 
@@ -135,16 +157,21 @@ proptest! {
     fn fuzz_deposit_multiple(
         amounts in prop::collection::vec(1i128..=10_000i128, 2..=8)
     ) {
-        let (env, client, _admin) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token_client = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &[2u8; 32]);
         let deadline = env.ledger().timestamp() + 86_400;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token_client.address.clone());
+
         let project = client.register_project(
             &creator,
-            &token_client.address,
+            &tokens,
             &1_000_000,
             &proof_hash,
             &deadline,
@@ -157,18 +184,20 @@ proptest! {
             let donator = Address::generate(&env);
             sac.mint(&donator, amount);
 
-            let before = client.get_project(&project.id).balance;
-            client.deposit(&project.id, &donator, amount);
-            let after = client.get_project(&project.id);
+            let before = client.get_balance(&project.id, &token_client.address);
+            client.deposit(&project.id, &donator, &token_client.address, amount);
+            let after_balance = client.get_balance(&project.id, &token_client.address);
 
-            assert_deposit_invariant(before, after.balance, *amount);
+            assert_deposit_invariant(before, after_balance, *amount);
+            
+            let after = client.get_project(&project.id);
             assert_all_project_invariants(&after);
 
             expected_balance += amount;
         }
 
-        let final_project = client.get_project(&project.id);
-        assert_eq!(final_project.balance, expected_balance);
+        let final_balance = client.get_balance(&project.id, &token_client.address);
+        assert_eq!(final_balance, expected_balance);
     }
 }
 
@@ -186,14 +215,19 @@ proptest! {
 
         let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &stored_bytes);
         let deadline = env.ledger().timestamp() + 86_400;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token.address.clone());
+
         let project = client.register_project(
             &creator,
-            &token.address,
+            &tokens,
             &500,
             &proof_hash,
             &deadline,
@@ -213,14 +247,19 @@ proptest! {
     ) {
         let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &hash_bytes);
         let deadline = env.ledger().timestamp() + 86_400;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token.address.clone());
+
         let project = client.register_project(
             &creator,
-            &token.address,
+            &tokens,
             &500,
             &proof_hash,
             &deadline,
@@ -244,18 +283,23 @@ proptest! {
 
     #[test]
     fn fuzz_sequential_ids(n in 2u32..=10u32) {
-        let (env, client, _admin) = setup_env();
+        let (env, client, admin) = setup_env();
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &[1u8; 32]);
         let deadline = env.ledger().timestamp() + 86_400;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token.address.clone());
+
         let mut projects = Vec::new();
         for _ in 0..n {
             let creator = Address::generate(&env);
+            client.grant_role(&admin, &creator, &Role::ProjectManager);
+
             let p = client.register_project(
                 &creator,
-                &token.address,
+                &tokens,
                 &1000,
                 &proof_hash,
                 &deadline,
@@ -274,16 +318,21 @@ proptest! {
 
     #[test]
     fn fuzz_immutability_after_deposit(amount in 1i128..=50_000i128) {
-        let (env, client, _admin) = setup_env();
+        let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token_client = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &[5u8; 32]);
         let deadline = env.ledger().timestamp() + 86_400;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token_client.address.clone());
+
         let original = client.register_project(
             &creator,
-            &token_client.address,
+            &tokens,
             &100_000,
             &proof_hash,
             &deadline,
@@ -292,7 +341,7 @@ proptest! {
         let donator = Address::generate(&env);
         let sac = token::StellarAssetClient::new(&env, &token_client.address);
         sac.mint(&donator, &amount);
-        client.deposit(&original.id, &donator, &amount);
+        client.deposit(&original.id, &donator, &token_client.address, &amount);
 
         let after = client.get_project(&original.id);
         assert_project_immutable_fields(&original, &after);
@@ -304,14 +353,19 @@ proptest! {
     ) {
         let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &hash_bytes);
         let deadline = env.ledger().timestamp() + 86_400;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token.address.clone());
+
         let original = client.register_project(
             &creator,
-            &token.address,
+            &tokens,
             &500,
             &proof_hash,
             &deadline,
@@ -340,15 +394,20 @@ proptest! {
     ) {
         let (env, client, admin) = setup_env();
         let creator = Address::generate(&env);
+        client.grant_role(&admin, &creator, &Role::ProjectManager);
+
         let token_admin = Address::generate(&env);
         let token_client = create_token(&env, &token_admin);
         let proof_hash = BytesN::from_array(&env, &hash_bytes);
         let deadline = env.ledger().timestamp() + deadline_offset;
 
+        let mut tokens = SorobanVec::new(&env);
+        tokens.push_back(token_client.address.clone());
+
         // Phase 1: Register project.
         let project = client.register_project(
             &creator,
-            &token_client.address,
+            &tokens,
             &goal,
             &proof_hash,
             &deadline,
@@ -364,19 +423,21 @@ proptest! {
             let donator = Address::generate(&env);
             sac.mint(&donator, amount);
 
-            let before = client.get_project(&project.id);
-            client.deposit(&project.id, &donator, amount);
-            let after = client.get_project(&project.id);
+            let before_balance = client.get_balance(&project.id, &token_client.address);
+            client.deposit(&project.id, &donator, &token_client.address, amount);
+            let after_balance = client.get_balance(&project.id, &token_client.address);
 
-            assert_deposit_invariant(before.balance, after.balance, *amount);
+            assert_deposit_invariant(before_balance, after_balance, *amount);
+            
+            let after = client.get_project(&project.id);
             assert_project_immutable_fields(&project, &after);
             assert_all_project_invariants(&after);
 
             total_deposited += amount;
         }
 
-        let after_deposits = client.get_project(&project.id);
-        assert_eq!(after_deposits.balance, total_deposited);
+        let final_balance = client.get_balance(&project.id, &token_client.address);
+        assert_eq!(final_balance, total_deposited);
 
         // Phase 3: Oracle verification.
         let oracle = Address::generate(&env);
@@ -387,8 +448,10 @@ proptest! {
         assert_valid_status_transition(&ProjectStatus::Funding, &final_project.status);
         assert_project_immutable_fields(&project, &final_project);
         assert_eq!(final_project.status, ProjectStatus::Completed);
+        
         // Balance should be unchanged after verification.
-        assert_eq!(final_project.balance, total_deposited);
+        let post_verify_balance = client.get_balance(&project.id, &token_client.address);
+        assert_eq!(post_verify_balance, total_deposited);
 
         // Phase 4: Double-verify should fail.
         let result = client.try_verify_and_release(&oracle, &project.id, &proof_hash);
