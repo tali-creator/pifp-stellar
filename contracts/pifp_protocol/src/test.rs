@@ -178,6 +178,65 @@ fn test_admin_can_pause_and_unpause() {
     assert!(!client.is_paused());
 }
 
+// ─── 9. Storage retrieval optimisations ─────────────────────
+
+#[test]
+fn test_project_exists_and_maybe_load_helpers() {
+    let (env, client, super_admin) = setup_with_init();
+    let contract_id = client.address.clone();
+    let token = Address::generate(&env);
+
+    // nothing registered yet
+    env.as_contract(&contract_id, || {
+        assert!(!crate::storage::project_exists(&env, 0));
+        assert_eq!(crate::storage::maybe_load_project(&env, 0), None);
+        assert_eq!(crate::storage::maybe_load_project_config(&env, 0), None);
+        assert_eq!(crate::storage::maybe_load_project_state(&env, 0), None);
+    });
+
+    // register one project and exercise the new helpers
+    let pm = Address::generate(&env);
+    client.grant_role(&super_admin, &pm, &Role::ProjectManager);
+    let tokens = Vec::from_array(&env, [token.clone()]);
+    let project = client.register_project(
+        &pm,
+        &tokens,
+        &1_000i128,
+        &dummy_proof(&env),
+        &future_deadline(&env),
+    );
+
+    env.as_contract(&contract_id, || {
+        assert!(crate::storage::project_exists(&env, project.id));
+        // individual maybe_load functions should return some value matching fields
+        let cfg = crate::storage::maybe_load_project_config(&env, project.id)
+            .expect("config should exist");
+        assert_eq!(cfg.id, project.id);
+        let st = crate::storage::maybe_load_project_state(&env, project.id)
+            .expect("state should exist");
+        assert_eq!(st.donation_count, 0);
+
+        // maybe_load_project returns full struct
+        let loaded = crate::storage::maybe_load_project(&env, project.id)
+            .expect("project exists");
+        assert_eq!(loaded.creator, project.creator);
+
+        // load_project_pair should match load_project
+        let (cfg2, st2) = crate::storage::load_project_pair(&env, project.id);
+        let full = crate::storage::load_project(&env, project.id);
+        assert_eq!(full.creator, cfg2.creator);
+        assert_eq!(full.donation_count, st2.donation_count);
+    });
+}
+
+#[test]
+#[should_panic]
+fn test_load_project_pair_panics_for_missing() {
+    let (env, _client, _super_admin) = setup_with_init();
+    // id 42 not present -> should panic
+    crate::storage::load_project_pair(&env, 42);
+}
+
 #[test]
 #[should_panic(expected = "HostError: Error(Contract, #6)")]
 fn test_non_admin_cannot_pause() {

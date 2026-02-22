@@ -213,6 +213,14 @@
                   "map": [
                     {
                       "key": {
+                        "symbol": "donation_count"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "status"
                       },
                       "val": {

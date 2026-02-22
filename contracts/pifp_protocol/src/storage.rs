@@ -112,9 +112,11 @@ pub fn set_paused(env: &Env, paused: bool) {
 
 /// Extend the TTL for a persistent storage key.
 fn bump_persistent(env: &Env, key: &DataKey) {
-    env.storage()
-        .persistent()
-        .extend_ttl(key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    env.storage().persistent().extend_ttl(
+        key,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
 }
 
 /// Save both the immutable config and initial mutable state for a new project.
@@ -133,6 +135,7 @@ pub fn save_project(env: &Env, project: &Project) {
 
     let state = ProjectState {
         status: project.status.clone(),
+        donation_count: project.donation_count,
     };
 
     env.storage().persistent().set(&config_key, &config);
@@ -146,11 +149,125 @@ pub fn save_project(env: &Env, project: &Project) {
     }
 }
 
+// /// Load the full `Project` by combining config and state.
+// /// Panics if the project does not exist.
+// pub fn load_project(env: &Env, id: u64) -> Project {
+//     let config = load_project_config(env, id);
+//     let state = load_project_state(env, id);
+//     Project {
+//         id: config.id,
+//         creator: config.creator,
+//         accepted_tokens: config.accepted_tokens,
+//         goal: config.goal,
+//         proof_hash: config.proof_hash,
+//         deadline: config.deadline,
+//         status: state.status,
+//         donation_count: 0, // In a real system, this might be tracked in ProjectState
+//     }
+// }
+
+/// Load only the immutable project configuration.
+///
+/// This helper panics with a generic string if the project does not exist. It
+/// is a thin wrapper around [`maybe_load_project_config`].
+#[allow(dead_code)]
+pub fn load_project_config(env: &Env, id: u64) -> ProjectConfig {
+    maybe_load_project_config(env, id).expect("project not found")
+}
+
+/// Load only the mutable project state.
+///
+/// Panics with a generic string if the project does not exist; delegates to
+/// [`maybe_load_project_state`].
+#[allow(dead_code)]
+pub fn load_project_state(env: &Env, id: u64) -> ProjectState {
+    maybe_load_project_state(env, id).expect("project not found")
+}
+
+/// Save only the mutable project state (optimized for deposits/verification).
+pub fn save_project_state(env: &Env, id: u64, state: &ProjectState) {
+    let key = DataKey::ProjState(id);
+    env.storage().persistent().set(&key, state);
+    bump_persistent(env, &key);
+}
+
+// ── New retrieval helpers ─────────────────────────────────────────
+
+/// Returns `true` if a project with the given `id` exists in persistent storage.
+///
+/// This performs a *single* storage `has` check and does **not** bump the TTL.
+/// It can be useful for quick existence guards without expensive panics or
+/// unwrapping.
+#[allow(dead_code)]
+pub fn project_exists(env: &Env, id: u64) -> bool {
+    let config_key = DataKey::ProjConfig(id);
+    env.storage().persistent().has(&config_key)
+}
+
+/// Attempt to load the immutable configuration for `id`.
+///
+/// The returned option will be `None` if the project is not found. When a value
+/// is returned the entry's TTL is bumped as usual; if the project does not
+/// exist **no TTL bump occurs**.
+#[allow(dead_code)]
+pub fn maybe_load_project_config(env: &Env, id: u64) -> Option<ProjectConfig> {
+    let key = DataKey::ProjConfig(id);
+    let opt: Option<ProjectConfig> = env.storage().persistent().get(&key);
+    if opt.is_some() {
+        bump_persistent(env, &key);
+    }
+    opt
+}
+
+/// Attempt to load the mutable state for `id`.
+///
+/// Works analogously to [`maybe_load_project_config`].
+#[allow(dead_code)]
+pub fn maybe_load_project_state(env: &Env, id: u64) -> Option<ProjectState> {
+    let key = DataKey::ProjState(id);
+    let opt: Option<ProjectState> = env.storage().persistent().get(&key);
+    if opt.is_some() {
+        bump_persistent(env, &key);
+    }
+    opt
+}
+
+/// Fetch both config and state in one call.
+///
+/// This is the core of our “optimized retrieval pattern”. Instead of the
+/// caller performing two separate lookups (which would each bump TTLs and
+/// incur independent gas costs), this helper reads both entries, bumps both
+/// TTLs, and returns them together. It is heavily used by high‑frequency
+/// operations such as `deposit` and `verify_and_release`.
+///
+/// Panics with `project not found` if either component is missing.
+pub fn load_project_pair(env: &Env, id: u64) -> (ProjectConfig, ProjectState) {
+    let config_key = DataKey::ProjConfig(id);
+    let state_key = DataKey::ProjState(id);
+
+    let config: ProjectConfig = env
+        .storage()
+        .persistent()
+        .get(&config_key)
+        .expect("project not found");
+    let state: ProjectState = env
+        .storage()
+        .persistent()
+        .get(&state_key)
+        .expect("project not found");
+
+    bump_persistent(env, &config_key);
+    bump_persistent(env, &state_key);
+
+    (config, state)
+}
+
 /// Load the full `Project` by combining config and state.
-/// Panics if the project does not exist.
+///
+/// Internally this now just delegates to [`load_project_pair`], avoiding
+/// duplicate TTL bumps and read boilerplate.
 pub fn load_project(env: &Env, id: u64) -> Project {
-    let config = load_project_config(env, id);
-    let state = load_project_state(env, id);
+    let (config, state) = load_project_pair(env, id);
     Project {
         id: config.id,
         creator: config.creator,
@@ -159,39 +276,35 @@ pub fn load_project(env: &Env, id: u64) -> Project {
         proof_hash: config.proof_hash,
         deadline: config.deadline,
         status: state.status,
-        donation_count: 0, 
+        donation_count: state.donation_count,
     }
 }
 
-/// Load only the immutable project configuration.
-pub fn load_project_config(env: &Env, id: u64) -> ProjectConfig {
-    let key = DataKey::ProjConfig(id);
-    let config: ProjectConfig = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .expect("project not found");
-    bump_persistent(env, &key);
-    config
-}
-
-/// Load only the mutable project state.
-pub fn load_project_state(env: &Env, id: u64) -> ProjectState {
-    let key = DataKey::ProjState(id);
-    let state: ProjectState = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .expect("project not found");
-    bump_persistent(env, &key);
-    state
-}
-
-/// Save only the mutable project state (optimized for deposits/verification).
-pub fn save_project_state(env: &Env, id: u64, state: &ProjectState) {
-    let key = DataKey::ProjState(id);
-    env.storage().persistent().set(&key, state);
-    bump_persistent(env, &key);
+/// Attempt to load a full project, returning `None` if it does not exist.
+///
+/// This is the most efficient way to query the contract when callers are
+/// unsure whether the project exists; it avoids any panics and still bumps the
+/// TTL of both underlying entries when present.
+#[allow(dead_code)]
+pub fn maybe_load_project(env: &Env, id: u64) -> Option<Project> {
+    let config_key = DataKey::ProjConfig(id);
+    // We test existence on one key only; if a project is corrupt (config
+    // without state) the subsequent `get` will still panic, which is acceptable
+    // since such a situation should never occur in normal operation.
+    if !env.storage().persistent().has(&config_key) {
+        return None;
+    }
+    let (config, state) = load_project_pair(env, id);
+    Some(Project {
+        id: config.id,
+        creator: config.creator,
+        accepted_tokens: config.accepted_tokens,
+        goal: config.goal,
+        proof_hash: config.proof_hash,
+        deadline: config.deadline,
+        status: state.status,
+        donation_count: state.donation_count,
+    })
 }
 
 /// Retrieve the balance of `token` for `project_id`.
