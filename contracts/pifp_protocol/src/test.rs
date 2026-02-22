@@ -162,3 +162,68 @@ fn test_deposit_after_deadline_fails() {
     
     client.deposit(&project.id, &admin, &token, &100i128);
 }
+
+// ─── 4. Emergency Pause Tests ────────────────────────────
+
+#[test]
+fn test_admin_can_pause_and_unpause() {
+    let (env, client, admin) = setup_with_init();
+    
+    assert!(!client.is_paused());
+    
+    client.pause(&admin);
+    assert!(client.is_paused());
+    
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #6)")]
+fn test_non_admin_cannot_pause() {
+    let (env, client, _admin) = setup_with_init();
+    let rando = Address::generate(&env);
+    
+    client.pause(&rando);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #19)")]
+fn test_registration_fails_when_paused() {
+    let (env, client, admin) = setup_with_init();
+    client.pause(&admin);
+    
+    let tokens = Vec::from_array(&env, [Address::generate(&env)]);
+    client.register_project(&admin, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #19)")]
+fn test_deposit_fails_when_paused() {
+    let (env, client, admin) = setup_with_init();
+    let token = Address::generate(&env);
+    let tokens = Vec::from_array(&env, [token.clone()]);
+    
+    let pm = Address::generate(&env);
+    client.grant_role(&admin, &pm, &Role::ProjectManager);
+    let project = client.register_project(&pm, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
+    
+    client.pause(&admin);
+    client.deposit(&project.id, &pm, &token, &100i128);
+}
+
+#[test]
+fn test_queries_work_when_paused() {
+    let (env, client, admin) = setup_with_init();
+    let tokens = Vec::from_array(&env, [Address::generate(&env)]);
+    
+    let pm = Address::generate(&env);
+    client.grant_role(&admin, &pm, &Role::ProjectManager);
+    let project = client.register_project(&pm, &tokens, &1000i128, &dummy_proof(&env), &future_deadline(&env));
+    
+    client.pause(&admin);
+    
+    // Query should still work
+    let loaded = client.get_project(&project.id);
+    assert_eq!(loaded.id, project.id);
+}

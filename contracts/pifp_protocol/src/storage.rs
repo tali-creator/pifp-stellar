@@ -62,6 +62,8 @@ pub enum DataKey {
     ProjState(u64),
     /// Token balance for a specific project and token (Persistent).
     TokenBalance(u64, Address),
+    /// Protocol pause state (Instance).
+    IsPaused,
 }
 
 // ── Instance Storage Helpers ─────────────────────────────────────────
@@ -90,6 +92,20 @@ pub fn get_and_increment_project_id(env: &Env) -> u64 {
         .instance()
         .set(&DataKey::ProjectCount, &(current + 1));
     current
+}
+
+/// Return true if the protocol is currently paused.
+pub fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::IsPaused)
+        .unwrap_or(false)
+}
+
+/// Set the protocol's pause state.
+pub fn set_paused(env: &Env, paused: bool) {
+    bump_instance(env);
+    env.storage().instance().set(&DataKey::IsPaused, &paused);
 }
 
 // ── Persistent Storage Helpers ───────────────────────────────────────

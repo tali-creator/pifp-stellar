@@ -74,6 +74,7 @@ pub enum Error {
     VerificationFailed   = 16,
     EmptyAcceptedTokens  = 17,
     Overflow             = 18,
+    ProtocolPaused       = 19,
 }
 
 #[contract]
@@ -135,6 +136,35 @@ impl PifpProtocol {
     }
 
     // ─────────────────────────────────────────────────────────
+    // Emergency Control
+    // ─────────────────────────────────────────────────────────
+
+    /// Pause the protocol, halting all registrations, deposits, and releases.
+    ///
+    /// - `caller` must hold `SuperAdmin` or `Admin`.
+    pub fn pause(env: Env, caller: Address) {
+        caller.require_auth();
+        rbac::require_admin_or_above(&env, &caller);
+        storage::set_paused(&env, true);
+        events::emit_protocol_paused(&env, caller);
+    }
+
+    /// Unpause the protocol.
+    ///
+    /// - `caller` must hold `SuperAdmin` or `Admin`.
+    pub fn unpause(env: Env, caller: Address) {
+        caller.require_auth();
+        rbac::require_admin_or_above(&env, &caller);
+        storage::set_paused(&env, false);
+        events::emit_protocol_unpaused(&env, caller);
+    }
+
+    /// Return true if the protocol is paused.
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
+    }
+
+    // ─────────────────────────────────────────────────────────
     // Project lifecycle
     // ─────────────────────────────────────────────────────────
 
@@ -149,6 +179,7 @@ impl PifpProtocol {
         proof_hash: BytesN<32>,
         deadline: u64,
     ) -> Project {
+        Self::require_not_paused(&env);
         creator.require_auth();
         // RBAC gate: only authorised roles may create projects.
         rbac::require_can_register(&env, &creator);
@@ -222,6 +253,7 @@ impl PifpProtocol {
     ///
     /// The `token` must be one of the project's accepted tokens.
     pub fn deposit(env: Env, project_id: u64, donator: Address, token: Address, amount: i128) {
+        Self::require_not_paused(&env);
         donator.require_auth();
 
         if amount <= 0 {
@@ -283,6 +315,7 @@ impl PifpProtocol {
     ///
     /// NOTE: This is a mocked verification (hash equality).
     pub fn verify_and_release(env: Env, oracle: Address, project_id: u64, submitted_proof_hash: BytesN<32>) {
+        Self::require_not_paused(&env);
         oracle.require_auth();
         // RBAC gate: caller must hold the Oracle role.
         rbac::require_oracle(&env, &oracle);
@@ -309,5 +342,15 @@ impl PifpProtocol {
 
         // Standardized event emission
         events::emit_project_verified(&env, project_id, oracle.clone(), submitted_proof_hash);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // Internal Helpers
+    // ─────────────────────────────────────────────────────────
+
+    fn require_not_paused(env: &Env) {
+        if storage::is_paused(env) {
+            panic_with_error!(env, Error::ProtocolPaused);
+        }
     }
 }
